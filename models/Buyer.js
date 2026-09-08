@@ -1,10 +1,13 @@
 const mongoose = require("mongoose");
 const User = require("./User");
+const CouponWeek = require("../services/couponWeek");
 
 const BuyerSchema = mongoose.model("buyer", new mongoose.Schema({
     email: { type: String, required: true },
     secret: { type: String, required: true },
     bought: { type: Boolean, default: false },
+    thisWeekStart: { type: String, default: null },
+    nextWeekStart: { type: String, default: null },
     this: {
         monday: {
             breakfast: { type: Boolean, default: false },
@@ -91,6 +94,54 @@ function emptyWeek() {
         saturday: { breakfast: false, lunch: false, dinner: false },
         sunday: { breakfast: false, lunch: false, dinner: false }
     };
+}
+
+function hasCoupons(week) {
+    return Object.values(week || {}).some((day) =>
+        Object.values(day || {}).some(Boolean)
+    );
+}
+
+async function synchronizeCouponWeeks(email) {
+    const buyer = await BuyerSchema.findOne({ email });
+    if (!buyer) return null;
+
+    const weeks = CouponWeek.getCouponWeeks();
+    const blankWeek = emptyWeek();
+    let thisWeek = buyer.this || blankWeek;
+    let nextWeek = buyer.next || blankWeek;
+    let thisWeekStart = buyer.thisWeekStart;
+    let nextWeekStart = buyer.nextWeekStart;
+
+    // Documents created before week keys existed cannot be assigned safely, so expire them.
+    if (!thisWeekStart && !nextWeekStart) {
+        thisWeek = blankWeek;
+        nextWeek = blankWeek;
+        thisWeekStart = weeks.current.start;
+        nextWeekStart = null;
+    } else {
+        if (nextWeekStart === weeks.current.start) {
+            thisWeek = nextWeek;
+            thisWeekStart = weeks.current.start;
+            nextWeek = blankWeek;
+            nextWeekStart = null;
+        } else if (thisWeekStart !== weeks.current.start) {
+            thisWeek = blankWeek;
+            thisWeekStart = weeks.current.start;
+        }
+
+        if (nextWeekStart !== weeks.next.start) {
+            nextWeek = blankWeek;
+            nextWeekStart = null;
+        }
+    }
+
+    const bought = nextWeekStart === weeks.next.start && hasCoupons(nextWeek);
+    await BuyerSchema.updateOne(
+        { _id: buyer._id },
+        { this: thisWeek, next: nextWeek, thisWeekStart, nextWeekStart, bought }
+    );
+    return await BuyerSchema.findById(buyer._id).select({ _id: 0 });
 }
 
 // Get the user details 
@@ -184,7 +235,7 @@ module.exports.getBuyer = async function (email) {
         },
         { new: true, upsert: true }
     ).select({ _id: 0 });
-    return Buyer;
+    return await synchronizeCouponWeeks(email) || Buyer;
 }
 
 // Resets the user secret 
@@ -202,6 +253,7 @@ module.exports.resetSecret = async function (email) {
 
 // Check if the user's coupon is valid 
 module.exports.checkCoupon = async function (data) {
+    await synchronizeCouponWeeks(data.email);
     const Buyer = await BuyerSchema.findOne({ email: data.email, secret: data.secret });
     if (Buyer == null) return false;
     if (Buyer.this[data.day][data.type]) {
@@ -213,14 +265,23 @@ module.exports.checkCoupon = async function (data) {
 
 // Save the purchased coupons 
 module.exports.saveOrder = async function (email, data) {
-    await BuyerSchema.updateOne({ email: email }, { next: data, bought: true });
+    await module.exports.getBuyer(email);
+    const weeks = CouponWeek.getCouponWeeks();
+    const result = await BuyerSchema.updateOne(
+        { email, nextWeekStart: { $ne: weeks.next.start } },
+        { next: data, nextWeekStart: weeks.next.start, bought: true }
+    );
+    return result.modifiedCount === 1;
 }
 
 // Check if the user has already bought the coupons for the coming week
 module.exports.boughtNextWeek = async function (email) {
-    await module.exports.getBuyer(email);
-    const Buyer = await BuyerSchema.findOne({ email: email });
-    return Buyer.bought;
+    const buyer = await module.exports.getBuyer(email);
+    const weeks = CouponWeek.getCouponWeeks();
+    return {
+        bought: buyer.bought && buyer.nextWeekStart === weeks.next.start,
+        period: weeks.next,
+    };
 }
 
 // Returns details of all the users
@@ -231,6 +292,7 @@ module.exports.allBuyers = async function () {
 
 // Returns registered users who have not bought coupons for the coming week.
 module.exports.usersMissingNextWeekCoupon = async function () {
+    await module.exports.rolloverWeek();
     const boughtEmails = await BuyerSchema.distinct("email", { bought: true });
     return await User.find({ email: { $nin: boughtEmails } })
         .select({ _id: 0, displayName: 1, email: 1 });
@@ -239,18 +301,8 @@ module.exports.usersMissingNextWeekCoupon = async function () {
 // Move purchased next-week coupons into the active week and clear next-week state.
 module.exports.rolloverWeek = async function () {
     const buyers = await BuyerSchema.find({});
-    const blankNextWeek = emptyWeek();
-
     for (const buyer of buyers) {
-        const nextWeek = JSON.parse(JSON.stringify(buyer.next || blankNextWeek));
-        await BuyerSchema.updateOne(
-            { _id: buyer._id },
-            {
-                this: nextWeek,
-                next: blankNextWeek,
-                bought: false
-            }
-        );
+        await synchronizeCouponWeeks(buyer.email);
     }
 
     return buyers.length;

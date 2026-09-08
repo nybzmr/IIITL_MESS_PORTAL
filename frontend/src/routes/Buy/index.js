@@ -309,6 +309,7 @@ export default function BuyPage() {
   const [cost, setCost] = useState(0);
   const [loading, setLoading] = useState(true);
   const [bought, setBought] = useState(false);
+  const [couponPeriod, setCouponPeriod] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [prefs, setPrefs] = useState("");
 
@@ -372,7 +373,8 @@ export default function BuyPage() {
     (async () => {
       try {
         const { data } = await axios.get(`${window.APIROOT}api/user/boughtNextWeek`);
-        setBought(data);
+        setBought(data.bought);
+        setCouponPeriod(data.period);
       } catch {
         message.error("Failed to fetch data from server");
       }
@@ -419,12 +421,14 @@ export default function BuyPage() {
 
       {bought ? (
         <div className={classes.bought}>
-          <Card title="Coupons Bought" bordered={false} style={{ width: 300 }}>
-            You can buy coupons for a week, the week before. You have already bought coupons for the next week.
+          <Card title="Coupons Bought" bordered={false} className={classes.statusCard}>
+            <p>Your coupons are valid from {couponPeriod?.label}.</p>
+            <p>You can buy fresh coupons after this period becomes the current week.</p>
           </Card>
         </div>
       ) : (
         <div className={classes.buyBody}>
+          {couponPeriod && <p className={classes.period}>Buying coupons valid from {couponPeriod.label}.</p>}
           <Input.TextArea
             value={prefs}
             onChange={(e) => setPrefs(e.target.value)}

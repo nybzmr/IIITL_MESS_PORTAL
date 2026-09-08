@@ -64,6 +64,11 @@ function startCouponRolloverScheduler() {
     if (schedulerStarted) return;
     schedulerStarted = true;
 
+    // Apply date-based reconciliation on startup so downtime cannot leave stale coupon state in MongoDB.
+    Buyer.rolloverWeek()
+        .then((buyers) => console.log(`Coupon week state synchronized for ${buyers} buyers`))
+        .catch((error) => console.error("Coupon week startup synchronization failed:", error));
+
     const tick = async () => {
         if (schedulerRunning || !shouldRunScheduledRollover()) return;
         schedulerRunning = true;

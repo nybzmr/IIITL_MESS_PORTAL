@@ -3,11 +3,12 @@ const mongoose = require("mongoose");
 const OrderSchema = new mongoose.Schema({
   orderid: { type: String, index: true, unique: true },
   selected: Object,
+  couponWeekStart: { type: String, required: true },
 });
 const OrderModel = mongoose.model("order", OrderSchema);
 
-module.exports.saveOrder = async function (orderid, selected) {
-  await OrderModel.updateOne({ orderid }, { $set: { selected } }, { upsert: true });
+module.exports.saveOrder = async function (orderid, selected, couponWeekStart) {
+  await OrderModel.updateOne({ orderid }, { $set: { selected, couponWeekStart } }, { upsert: true });
 };
 module.exports.getOrder = async function (orderid) {
   return await OrderModel.findOne({ orderid });

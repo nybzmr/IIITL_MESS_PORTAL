@@ -7,6 +7,7 @@ const Time = require("../models/Time");
 const Order = require("../models/Order");
 const Menu = require("../models/Menu");
 const DishRating = require("../models/DishRating");
+const CouponWeek = require("../services/couponWeek");
 
 const { validatePaymentVerification } = require("razorpay/dist/utils/razorpay-utils");
 
@@ -48,6 +49,11 @@ router.get("/boughtNextWeek", async (req, res) => {
 
 router.post("/createOrder", async (req, res) => {
   try {
+    const couponStatus = await Buyer.boughtNextWeek(req.user?.email);
+    if (couponStatus.bought) {
+      return res.status(409).send({ error: `Coupons for ${couponStatus.period.label} have already been bought` });
+    }
+
     const costs = await Time.getTimes(); 
     const priceByMeal = {};
     for (const c of costs) priceByMeal[c.meal] = toNumber(c.cost, 0);
@@ -68,7 +74,7 @@ router.post("/createOrder", async (req, res) => {
       notes: { source: "IIITL MESS PORTAL" },
     });
 
-    await Order.saveOrder(order.id, selected);
+    await Order.saveOrder(order.id, selected, couponStatus.period.start);
 
     console.log("createOrder", {
       env: keyId?.startsWith("rzp_test_") ? "TEST" : "LIVE",
@@ -99,7 +105,15 @@ router.post("/checkOrder", async (req, res) => {
     const orderObj = await Order.getOrder(razorpay_order_id);
     if (!orderObj) return res.status(404).send({ ok: false, error: "Order not found" });
 
-    await Buyer.saveOrder(req.user?.email, orderObj.selected);
+    const targetWeek = CouponWeek.getCouponWeeks().next.start;
+    if (orderObj.couponWeekStart !== targetWeek) {
+      return res.status(409).send({ ok: false, error: "This payment order is for an expired coupon week" });
+    }
+
+    const saved = await Buyer.saveOrder(req.user?.email, orderObj.selected);
+    if (!saved) {
+      return res.status(409).send({ ok: false, error: "Coupons for the coming week have already been bought" });
+    }
 
 
     res.send(true);
